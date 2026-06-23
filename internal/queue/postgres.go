@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ const postgresPollInterval = 100 * time.Millisecond
 // PostgresQueue is a shared priority queue backed by PostgreSQL (FOR UPDATE SKIP LOCKED).
 type PostgresQueue struct {
 	pool     *pgxpool.Pool
+	logger   *slog.Logger
 	mu       sync.Mutex
 	closed   bool
 	notifyCh chan struct{}
@@ -23,19 +25,25 @@ type PostgresQueue struct {
 func NewPostgres(pool *pgxpool.Pool) *PostgresQueue {
 	return &PostgresQueue{
 		pool:     pool,
+		logger:   slog.Default(),
 		notifyCh: make(chan struct{}, 1),
 	}
 }
 
 func (q *PostgresQueue) Enqueue(jobID string, priority int, availableAt time.Time) {
 	ctx := context.Background()
-	_, _ = q.pool.Exec(ctx, `
+	_, err := q.pool.Exec(ctx, `
 		INSERT INTO job_queue (job_id, priority, available_at) VALUES ($1,$2,$3)
 		ON CONFLICT (job_id) DO UPDATE SET
 			priority = EXCLUDED.priority,
 			available_at = EXCLUDED.available_at`,
 		jobID, priority, availableAt,
 	)
+	if err != nil {
+		q.logger.Error("postgres queue enqueue failed", "job_id", jobID, "error", err)
+		return
+	}
+	q.logger.Debug("postgres queue enqueued", "job_id", jobID, "priority", priority, "available_at", availableAt)
 	q.signal()
 }
 
@@ -102,16 +110,22 @@ func (q *PostgresQueue) tryDequeue(ctx context.Context) (string, bool, error) {
 func (q *PostgresQueue) Remove(jobID string) bool {
 	tag, err := q.pool.Exec(context.Background(),
 		`DELETE FROM job_queue WHERE job_id = $1`, jobID)
-	return err == nil && tag.RowsAffected() > 0
+	if err != nil {
+		q.logger.Error("postgres queue remove failed", "job_id", jobID, "error", err)
+		return false
+	}
+	return tag.RowsAffected() > 0
 }
 
 func (q *PostgresQueue) Depth() (pending, delayed int) {
 	ctx := context.Background()
-	_ = q.pool.QueryRow(ctx, `
+	if err := q.pool.QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (WHERE available_at <= NOW()),
 			COUNT(*) FILTER (WHERE available_at > NOW())
-		FROM job_queue`).Scan(&pending, &delayed)
+		FROM job_queue`).Scan(&pending, &delayed); err != nil {
+		q.logger.Error("postgres queue depth failed", "error", err)
+	}
 	return pending, delayed
 }
 
@@ -119,6 +133,7 @@ func (q *PostgresQueue) Drain() []string {
 	ctx := context.Background()
 	rows, err := q.pool.Query(ctx, `DELETE FROM job_queue RETURNING job_id`)
 	if err != nil {
+		q.logger.Error("postgres queue drain failed", "error", err)
 		return nil
 	}
 	defer rows.Close()
@@ -127,6 +142,7 @@ func (q *PostgresQueue) Drain() []string {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			q.logger.Warn("postgres queue drain: scan failed", "error", err)
 			continue
 		}
 		ids = append(ids, id)

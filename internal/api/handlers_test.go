@@ -38,7 +38,7 @@ func newTestEnv(t *testing.T, reg *handler.Registry) testEnv {
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg)
+	svc := service.New(cfg, st, q, reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	h := NewHandler(svc, logger)
 	return testEnv{
@@ -306,8 +306,8 @@ func TestSubmitInvalidTimeout(t *testing.T) {
 
 	resp := postJSON(t, env.server.URL+"/jobs", `{"type":"echo","timeout_per_attempt":"bad"}`)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status: got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", resp.StatusCode)
 	}
 }
 

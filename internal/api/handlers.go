@@ -25,10 +25,12 @@ func NewHandler(svc *service.Service, logger *slog.Logger) *Handler {
 func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 	var req domain.SubmitJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logger.Warn("submit: invalid JSON", "error", err)
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if req.Type == "" {
+		h.logger.Warn("submit: missing type")
 		writeError(w, http.StatusBadRequest, "type is required")
 		return
 	}
@@ -38,15 +40,19 @@ func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.svc.Submit(r.Context(), req)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidJobType) {
+		switch {
+		case errors.Is(err, service.ErrInvalidJobType):
 			writeError(w, http.StatusBadRequest, err.Error())
-			return
+		case errors.Is(err, service.ErrInvalidTimeout):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			h.logger.Error("submit job failed", "type", req.Type, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to submit job")
 		}
-		h.logger.Error("submit job failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to submit job")
 		return
 	}
 
+	h.logger.Info("submit accepted", "job_id", job.ID, "type", job.Type)
 	writeJSON(w, http.StatusAccepted, job.ToResponse())
 }
 
@@ -63,6 +69,7 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "job not found")
 			return
 		}
+		h.logger.Error("get job failed", "job_id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get job")
 		return
 	}
@@ -73,6 +80,7 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) QueueDepth(w http.ResponseWriter, r *http.Request) {
 	depth, err := h.svc.QueueDepth(r.Context())
 	if err != nil {
+		h.logger.Error("queue depth failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get queue depth")
 		return
 	}
@@ -82,9 +90,11 @@ func (h *Handler) QueueDepth(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DrainQueue(w http.ResponseWriter, r *http.Request) {
 	result, err := h.svc.Drain(r.Context())
 	if err != nil {
+		h.logger.Error("drain queue failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to drain queue")
 		return
 	}
+	h.logger.Info("queue drain completed", "cancelled", result.Cancelled)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -97,24 +107,26 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.svc.Cancel(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, service.ErrJobNotFound) {
+		switch {
+		case errors.Is(err, service.ErrJobNotFound):
 			writeError(w, http.StatusNotFound, "job not found")
-			return
-		}
-		if errors.Is(err, service.ErrJobNotCancellable) {
+		case errors.Is(err, service.ErrJobNotCancellable):
 			writeError(w, http.StatusConflict, "job cannot be cancelled in current state")
-			return
+		default:
+			h.logger.Error("cancel job failed", "job_id", id, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to cancel job")
 		}
-		writeError(w, http.StatusInternalServerError, "failed to cancel job")
 		return
 	}
 
+	h.logger.Info("job cancelled via API", "job_id", id)
 	writeJSON(w, http.StatusOK, job.ToResponse())
 }
 
 func (h *Handler) ListDeadLettered(w http.ResponseWriter, r *http.Request) {
 	jobs, err := h.svc.ListDeadLettered(r.Context())
 	if err != nil {
+		h.logger.Error("list dead-lettered failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list dead-lettered jobs")
 		return
 	}
@@ -132,7 +144,9 @@ func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("write JSON response failed", "error", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

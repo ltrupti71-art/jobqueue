@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +18,9 @@ import (
 )
 
 var (
-	ErrJobNotFound      = store.ErrNotFound
-	ErrInvalidJobType   = errors.New("unknown job type")
+	ErrJobNotFound       = store.ErrNotFound
+	ErrInvalidJobType    = errors.New("unknown job type")
+	ErrInvalidTimeout    = errors.New("invalid timeout_per_attempt")
 	ErrJobNotCancellable = errors.New("job cannot be cancelled in current state")
 )
 
@@ -27,14 +29,19 @@ type Service struct {
 	store    store.Store
 	queue    queue.Queue
 	handlers *handler.Registry
+	logger   *slog.Logger
 }
 
-func New(cfg config.Config, st store.Store, q queue.Queue, handlers *handler.Registry) *Service {
-	return &Service{cfg: cfg, store: st, queue: q, handlers: handlers}
+func New(cfg config.Config, st store.Store, q queue.Queue, handlers *handler.Registry, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{cfg: cfg, store: st, queue: q, handlers: handlers, logger: logger}
 }
 
 func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*domain.Job, error) {
 	if _, ok := s.handlers.Get(req.Type); !ok {
+		s.logger.Warn("submit rejected: unknown job type", "type", req.Type)
 		return nil, fmt.Errorf("%w: %s", ErrInvalidJobType, req.Type)
 	}
 
@@ -42,7 +49,8 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 	if req.TimeoutPerAttempt != "" {
 		d, err := time.ParseDuration(req.TimeoutPerAttempt)
 		if err != nil {
-			return nil, fmt.Errorf("invalid timeout_per_attempt: %w", err)
+			s.logger.Warn("submit rejected: invalid timeout", "timeout", req.TimeoutPerAttempt, "error", err)
+			return nil, fmt.Errorf("%w: %w", ErrInvalidTimeout, err)
 		}
 		timeout = d
 	}
@@ -73,31 +81,46 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 
 	if ac, ok := s.store.(store.AtomicCreator); ok {
 		if err := ac.CreateAndEnqueue(ctx, job); err != nil {
-			return nil, err
+			s.logger.Error("submit failed: atomic create", "job_id", job.ID, "type", job.Type, "error", err)
+			return nil, fmt.Errorf("submit job: %w", err)
 		}
+		s.logger.Info("job submitted", "job_id", job.ID, "type", job.Type, "priority", priority, "max_retries", maxRetries)
 		return job, nil
 	}
 
 	if err := s.store.Create(ctx, job); err != nil {
-		return nil, err
+		s.logger.Error("submit failed: store create", "job_id", job.ID, "error", err)
+		return nil, fmt.Errorf("create job: %w", err)
 	}
 	s.queue.Enqueue(job.ID, job.Priority, job.AvailableAt)
+	s.logger.Info("job submitted", "job_id", job.ID, "type", job.Type, "priority", priority, "max_retries", maxRetries)
 	return job, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (*domain.Job, error) {
-	return s.store.Get(ctx, id)
+	job, err := s.store.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrJobNotFound) {
+			s.logger.Debug("job not found", "job_id", id)
+		} else {
+			s.logger.Error("get job failed", "job_id", id, "error", err)
+		}
+		return nil, err
+	}
+	return job, nil
 }
 
 func (s *Service) QueueDepth(ctx context.Context) (domain.QueueDepth, error) {
 	pending, delayed := s.queue.Depth()
 	running, err := s.store.CountByState(ctx, domain.StateRunning)
 	if err != nil {
-		return domain.QueueDepth{}, err
+		s.logger.Error("queue depth: count running failed", "error", err)
+		return domain.QueueDepth{}, fmt.Errorf("count running: %w", err)
 	}
 	dead, err := s.store.CountByState(ctx, domain.StateDeadLettered)
 	if err != nil {
-		return domain.QueueDepth{}, err
+		s.logger.Error("queue depth: count dead-lettered failed", "error", err)
+		return domain.QueueDepth{}, fmt.Errorf("count dead-lettered: %w", err)
 	}
 	return domain.QueueDepth{
 		Pending:      pending,
@@ -114,15 +137,16 @@ func (s *Service) Cancel(ctx context.Context, id string) (*domain.Job, error) {
 		return nil, err
 	}
 	if job.State != domain.StateQueued {
+		s.logger.Warn("cancel rejected: job not queued", "job_id", id, "state", job.State)
 		return nil, ErrJobNotCancellable
 	}
 	if !s.queue.Remove(id) {
-		// Job may have been picked up by a worker between check and remove.
 		fresh, err := s.store.Get(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		if fresh.State != domain.StateQueued {
+			s.logger.Warn("cancel rejected: job picked up by worker", "job_id", id, "state", fresh.State)
 			return nil, ErrJobNotCancellable
 		}
 	}
@@ -131,36 +155,52 @@ func (s *Service) Cancel(ctx context.Context, id string) (*domain.Job, error) {
 	job.UpdatedAt = now
 	job.CompletedAt = &now
 	if err := s.store.Update(ctx, job); err != nil {
-		return nil, err
+		s.logger.Error("cancel failed: store update", "job_id", id, "error", err)
+		return nil, fmt.Errorf("cancel job: %w", err)
 	}
+	s.logger.Info("job cancelled", "job_id", id)
 	return job, nil
 }
 
 func (s *Service) Drain(ctx context.Context) (domain.DrainResult, error) {
 	ids := s.queue.Drain()
 	now := time.Now().UTC()
+	cancelled := 0
 	for _, id := range ids {
 		job, err := s.store.Get(ctx, id)
 		if err != nil {
+			s.logger.Warn("drain: skip job get failed", "job_id", id, "error", err)
 			continue
 		}
 		if job.State != domain.StateQueued {
+			s.logger.Debug("drain: skip non-queued job", "job_id", id, "state", job.State)
 			continue
 		}
 		job.State = domain.StateCancelled
 		job.UpdatedAt = now
 		job.CompletedAt = &now
-		_ = s.store.Update(ctx, job)
+		if err := s.store.Update(ctx, job); err != nil {
+			s.logger.Error("drain: store update failed", "job_id", id, "error", err)
+			continue
+		}
+		cancelled++
 	}
-	return domain.DrainResult{Cancelled: len(ids), JobIDs: ids}, nil
+	s.logger.Info("queue drained", "removed_from_queue", len(ids), "cancelled", cancelled)
+	return domain.DrainResult{Cancelled: cancelled, JobIDs: ids}, nil
 }
 
 func (s *Service) ProcessJob(ctx context.Context, jobID string) {
 	job, err := s.store.Get(ctx, jobID)
 	if err != nil {
+		if errors.Is(err, ErrJobNotFound) {
+			s.logger.Warn("process skipped: job not found", "job_id", jobID)
+		} else {
+			s.logger.Error("process failed: get job", "job_id", jobID, "error", err)
+		}
 		return
 	}
 	if job.State != domain.StateQueued {
+		s.logger.Debug("process skipped: job not queued", "job_id", jobID, "state", job.State)
 		return
 	}
 
@@ -170,11 +210,20 @@ func (s *Service) ProcessJob(ctx context.Context, jobID string) {
 	job.StartedAt = &now
 	job.UpdatedAt = now
 	if err := s.store.Update(ctx, job); err != nil {
+		s.logger.Error("process failed: mark running", "job_id", jobID, "error", err)
 		return
 	}
 
+	s.logger.Info("job attempt started",
+		"job_id", jobID,
+		"type", job.Type,
+		"attempt", job.AttemptCount,
+		"max_retries", job.MaxRetries,
+	)
+
 	h, ok := s.handlers.Get(job.Type)
 	if !ok {
+		s.logger.Error("process failed: unknown handler", "job_id", jobID, "type", job.Type)
 		s.failJob(ctx, job, fmt.Sprintf("unknown handler: %s", job.Type), false)
 		return
 	}
@@ -191,10 +240,19 @@ func (s *Service) ProcessJob(ctx context.Context, jobID string) {
 		job.LastError = ""
 		job.CompletedAt = &completed
 		job.UpdatedAt = completed
-		_ = s.store.Update(ctx, job)
+		if err := s.store.Update(ctx, job); err != nil {
+			s.logger.Error("process failed: persist success", "job_id", jobID, "error", err)
+			return
+		}
+		s.logger.Info("job succeeded", "job_id", jobID, "attempt", job.AttemptCount)
 		return
 	}
 
+	s.logger.Warn("job attempt failed",
+		"job_id", jobID,
+		"attempt", job.AttemptCount,
+		"error", execErr.Error(),
+	)
 	s.handleFailure(ctx, job, execErr.Error(), completed)
 }
 
@@ -205,7 +263,15 @@ func (s *Service) handleFailure(ctx context.Context, job *domain.Job, errMsg str
 	if job.AttemptCount >= job.MaxRetries {
 		job.State = domain.StateDeadLettered
 		job.CompletedAt = &failedAt
-		_ = s.store.Update(ctx, job)
+		if err := s.store.Update(ctx, job); err != nil {
+			s.logger.Error("dead-letter failed: store update", "job_id", job.ID, "error", err)
+			return
+		}
+		s.logger.Error("job dead-lettered",
+			"job_id", job.ID,
+			"attempts", job.AttemptCount,
+			"last_error", errMsg,
+		)
 		return
 	}
 
@@ -213,8 +279,17 @@ func (s *Service) handleFailure(ctx context.Context, job *domain.Job, errMsg str
 	job.State = domain.StateQueued
 	job.AvailableAt = failedAt.Add(delay)
 	job.StartedAt = nil
-	_ = s.store.Update(ctx, job)
+	if err := s.store.Update(ctx, job); err != nil {
+		s.logger.Error("retry failed: store update", "job_id", job.ID, "error", err)
+		return
+	}
 	s.queue.Enqueue(job.ID, job.Priority, job.AvailableAt)
+	s.logger.Info("job scheduled for retry",
+		"job_id", job.ID,
+		"attempt", job.AttemptCount,
+		"backoff", delay.String(),
+		"available_at", job.AvailableAt,
+	)
 }
 
 func (s *Service) failJob(ctx context.Context, job *domain.Job, errMsg string, retry bool) {
@@ -227,24 +302,37 @@ func (s *Service) failJob(ctx context.Context, job *domain.Job, errMsg string, r
 	}
 	job.State = domain.StateDeadLettered
 	job.CompletedAt = &now
-	_ = s.store.Update(ctx, job)
+	if err := s.store.Update(ctx, job); err != nil {
+		s.logger.Error("failJob: store update failed", "job_id", job.ID, "error", err)
+		return
+	}
+	s.logger.Error("job dead-lettered", "job_id", job.ID, "last_error", errMsg)
 }
 
 func (s *Service) RunScheduler(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.SchedulerInterval)
 	defer ticker.Stop()
+	s.logger.Info("scheduler started", "interval", s.cfg.SchedulerInterval.String())
 	for {
 		select {
 		case <-ctx.Done():
+			s.logger.Info("scheduler stopped")
 			return
 		case <-ticker.C:
-			s.queue.PromoteDue(time.Now().UTC())
+			if promoted := s.queue.PromoteDue(time.Now().UTC()); promoted > 0 {
+				s.logger.Debug("scheduler promoted delayed jobs", "count", promoted)
+			}
 		}
 	}
 }
 
 func (s *Service) ListDeadLettered(ctx context.Context) ([]*domain.Job, error) {
-	return s.store.ListByState(ctx, domain.StateDeadLettered)
+	jobs, err := s.store.ListByState(ctx, domain.StateDeadLettered)
+	if err != nil {
+		s.logger.Error("list dead-lettered failed", "error", err)
+		return nil, fmt.Errorf("list dead-lettered: %w", err)
+	}
+	return jobs, nil
 }
 
 func MarshalResult(v any) (json.RawMessage, error) {

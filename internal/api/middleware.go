@@ -18,6 +18,19 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 				"status", rw.status,
 				"duration_ms", time.Since(start).Milliseconds(),
 			)
+			if rw.status >= 500 {
+				logger.Error("request failed",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"status", rw.status,
+				)
+			} else if rw.status >= 400 {
+				logger.Warn("request client error",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"status", rw.status,
+				)
+			}
 		})
 	}
 }

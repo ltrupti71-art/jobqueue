@@ -29,7 +29,7 @@ func testConfig() config.Config {
 func newTestService(t *testing.T, reg *handler.Registry) (*Service, queue.Queue) {
 	t.Helper()
 	q := queue.NewMemory()
-	svc := New(testConfig(), store.NewMemoryStore(), q, reg)
+	svc := New(testConfig(), store.NewMemoryStore(), q, reg, nil)
 	return svc, q
 }
 
@@ -203,8 +203,8 @@ func TestSubmitInvalidTimeout(t *testing.T) {
 		Payload:           json.RawMessage(`{}`),
 		TimeoutPerAttempt: "not-a-duration",
 	})
-	if err == nil {
-		t.Fatal("expected invalid timeout error")
+	if !errors.Is(err, ErrInvalidTimeout) {
+		t.Fatalf("got %v, want ErrInvalidTimeout", err)
 	}
 }
 
@@ -316,7 +316,7 @@ func TestProcessJobUnknownHandler(t *testing.T) {
 		AvailableAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	_ = st.Create(ctx, job)
-	svc = New(testConfig(), st, q, handler.NewRegistry())
+	svc = New(testConfig(), st, q, handler.NewRegistry(), nil)
 	q.Enqueue("orphan", 0, now)
 
 	svc.ProcessJob(ctx, "orphan")
@@ -340,7 +340,7 @@ func TestProcessJobTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.DefaultTimeout = 50 * time.Millisecond
 	q := queue.NewMemory()
-	svc := New(cfg, store.NewMemoryStore(), q, reg)
+	svc := New(cfg, store.NewMemoryStore(), q, reg, nil)
 	ctx := context.Background()
 
 	job, _ := svc.Submit(ctx, domain.SubmitJobRequest{
@@ -430,7 +430,7 @@ func TestQueueDepthRunningAndDead(t *testing.T) {
 	cfg := testConfig()
 	cfg.DefaultTimeout = time.Hour
 	q := queue.NewMemory()
-	svc := New(cfg, store.NewMemoryStore(), q, reg)
+	svc := New(cfg, store.NewMemoryStore(), q, reg, nil)
 	ctx := context.Background()
 
 	_, _ = svc.Submit(ctx, domain.SubmitJobRequest{Type: "hang", Payload: json.RawMessage(`{}`)})

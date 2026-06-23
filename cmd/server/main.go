@@ -57,7 +57,7 @@ func main() {
 	}
 
 	handlers := handler.NewRegistry()
-	svc := service.New(cfg, st, q, handlers)
+	svc := service.New(cfg, st, q, handlers, logger)
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -47,7 +47,7 @@ func startIntegration(t *testing.T, reg *handler.Registry, workerCount int) *int
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg)
+	svc := service.New(cfg, st, q, reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,7 +356,7 @@ func TestIntegrationHandlerTimeout(t *testing.T) {
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg)
+	svc := service.New(cfg, st, q, reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	ctx, cancel := context.WithCancel(context.Background())
