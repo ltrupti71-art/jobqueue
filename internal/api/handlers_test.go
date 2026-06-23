@@ -25,7 +25,7 @@ type testEnv struct {
 	server *httptest.Server
 	svc    *service.Service
 	store  store.Store
-	queue  *queue.Queue
+	queue  queue.Queue
 }
 
 func newTestEnv(t *testing.T, reg *handler.Registry) testEnv {
@@ -37,7 +37,7 @@ func newTestEnv(t *testing.T, reg *handler.Registry) testEnv {
 		BackoffMax:        100 * time.Millisecond,
 	}
 	st := store.NewMemoryStore()
-	q := queue.New()
+	q := queue.NewMemory()
 	svc := service.New(cfg, st, q, reg)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	h := NewHandler(svc, logger)

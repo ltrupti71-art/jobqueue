@@ -25,11 +25,11 @@ var (
 type Service struct {
 	cfg      config.Config
 	store    store.Store
-	queue    *queue.Queue
+	queue    queue.Queue
 	handlers *handler.Registry
 }
 
-func New(cfg config.Config, st store.Store, q *queue.Queue, handlers *handler.Registry) *Service {
+func New(cfg config.Config, st store.Store, q queue.Queue, handlers *handler.Registry) *Service {
 	return &Service{cfg: cfg, store: st, queue: q, handlers: handlers}
 }
 
@@ -69,6 +69,13 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 		AvailableAt:       now,
 		CreatedAt:         now,
 		UpdatedAt:         now,
+	}
+
+	if ac, ok := s.store.(store.AtomicCreator); ok {
+		if err := ac.CreateAndEnqueue(ctx, job); err != nil {
+			return nil, err
+		}
+		return job, nil
 	}
 
 	if err := s.store.Create(ctx, job); err != nil {

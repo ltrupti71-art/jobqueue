@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	Addr              string
+	DatabaseURL       string
 	WorkerCount       int
 	DefaultMaxRetries int
 	DefaultTimeout    time.Duration
@@ -19,8 +20,13 @@ type Config struct {
 }
 
 func Load() Config {
+	addr := envOr("ADDR", "")
+	if addr == "" {
+		addr = ":" + envOr("PORT", "8080")
+	}
 	return Config{
-		Addr:              envOr("ADDR", ":8080"),
+		Addr:              addr,
+		DatabaseURL:       envOr("DATABASE_URL", ""),
 		WorkerCount:       envIntOr("WORKER_COUNT", 4),
 		DefaultMaxRetries: envIntOr("DEFAULT_MAX_RETRIES", 3),
 		DefaultTimeout:    envDurationOr("DEFAULT_TIMEOUT", 30*time.Second),

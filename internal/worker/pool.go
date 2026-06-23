@@ -14,13 +14,13 @@ type JobProcessor interface {
 
 type Pool struct {
 	count     int
-	queue     *queue.Queue
+	queue     queue.Queue
 	processor JobProcessor
 	logger    *slog.Logger
 	wg        sync.WaitGroup
 }
 
-func NewPool(count int, q *queue.Queue, processor JobProcessor, logger *slog.Logger) *Pool {
+func NewPool(count int, q queue.Queue, processor JobProcessor, logger *slog.Logger) *Pool {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -63,7 +63,7 @@ func (p *Pool) Wait() {
 	p.wg.Wait()
 }
 
-func (p *Pool) Stop(q *queue.Queue) {
+func (p *Pool) Stop(q queue.Queue) {
 	q.Close()
 	p.wg.Wait()
 }

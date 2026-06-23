@@ -26,9 +26,9 @@ func testConfig() config.Config {
 	}
 }
 
-func newTestService(t *testing.T, reg *handler.Registry) (*Service, *queue.Queue) {
+func newTestService(t *testing.T, reg *handler.Registry) (*Service, queue.Queue) {
 	t.Helper()
-	q := queue.New()
+	q := queue.NewMemory()
 	svc := New(testConfig(), store.NewMemoryStore(), q, reg)
 	return svc, q
 }
@@ -339,7 +339,7 @@ func TestProcessJobTimeout(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.DefaultTimeout = 50 * time.Millisecond
-	q := queue.New()
+	q := queue.NewMemory()
 	svc := New(cfg, store.NewMemoryStore(), q, reg)
 	ctx := context.Background()
 
@@ -429,7 +429,7 @@ func TestQueueDepthRunningAndDead(t *testing.T) {
 	})
 	cfg := testConfig()
 	cfg.DefaultTimeout = time.Hour
-	q := queue.New()
+	q := queue.NewMemory()
 	svc := New(cfg, store.NewMemoryStore(), q, reg)
 	ctx := context.Background()
 

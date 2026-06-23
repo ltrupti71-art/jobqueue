@@ -48,7 +48,8 @@ func (pq *priorityQueue) Pop() any {
 	return item
 }
 
-type Queue struct {
+// MemoryQueue is an in-process priority queue for local development.
+type MemoryQueue struct {
 	mu      sync.Mutex
 	ready   priorityQueue
 	delayed priorityQueue
@@ -56,15 +57,20 @@ type Queue struct {
 	closed  bool
 }
 
-func New() *Queue {
-	q := &Queue{}
+func NewMemory() *MemoryQueue {
+	q := &MemoryQueue{}
 	q.cond = sync.NewCond(&q.mu)
 	heap.Init(&q.ready)
 	heap.Init(&q.delayed)
 	return q
 }
 
-func (q *Queue) Enqueue(jobID string, priority int, availableAt time.Time) {
+// New returns an in-memory queue (alias for local dev).
+func New() Queue {
+	return NewMemory()
+}
+
+func (q *MemoryQueue) Enqueue(jobID string, priority int, availableAt time.Time) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
@@ -79,7 +85,7 @@ func (q *Queue) Enqueue(jobID string, priority int, availableAt time.Time) {
 	}
 }
 
-func (q *Queue) PromoteDue(now time.Time) int {
+func (q *MemoryQueue) PromoteDue(now time.Time) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	promoted := 0
@@ -95,7 +101,7 @@ func (q *Queue) PromoteDue(now time.Time) int {
 	return promoted
 }
 
-func (q *Queue) Dequeue(ctx context.Context) (string, bool, error) {
+func (q *MemoryQueue) Dequeue(ctx context.Context) (string, bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -128,7 +134,7 @@ func (q *Queue) Dequeue(ctx context.Context) (string, bool, error) {
 	}
 }
 
-func (q *Queue) Remove(jobID string) bool {
+func (q *MemoryQueue) Remove(jobID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if removed := q.removeFrom(&q.ready, jobID); removed {
@@ -137,7 +143,7 @@ func (q *Queue) Remove(jobID string) bool {
 	return q.removeFrom(&q.delayed, jobID)
 }
 
-func (q *Queue) removeFrom(pq *priorityQueue, jobID string) bool {
+func (q *MemoryQueue) removeFrom(pq *priorityQueue, jobID string) bool {
 	for i, item := range *pq {
 		if item.JobID == jobID {
 			heap.Remove(pq, i)
@@ -147,13 +153,13 @@ func (q *Queue) removeFrom(pq *priorityQueue, jobID string) bool {
 	return false
 }
 
-func (q *Queue) Depth() (pending, delayed int) {
+func (q *MemoryQueue) Depth() (pending, delayed int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.ready.Len(), q.delayed.Len()
 }
 
-func (q *Queue) Drain() []string {
+func (q *MemoryQueue) Drain() []string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var ids []string
@@ -168,7 +174,7 @@ func (q *Queue) Drain() []string {
 	return ids
 }
 
-func (q *Queue) Close() {
+func (q *MemoryQueue) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.closed = true

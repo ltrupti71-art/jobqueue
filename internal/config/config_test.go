@@ -8,7 +8,7 @@ import (
 
 func TestLoadDefaults(t *testing.T) {
 	// Clear env vars that could affect test
-	for _, key := range []string{"ADDR", "WORKER_COUNT", "DEFAULT_MAX_RETRIES", "DEFAULT_TIMEOUT", "BACKOFF_BASE"} {
+	for _, key := range []string{"ADDR", "PORT", "DATABASE_URL", "WORKER_COUNT", "DEFAULT_MAX_RETRIES", "DEFAULT_TIMEOUT", "BACKOFF_BASE"} {
 		os.Unsetenv(key)
 	}
 
@@ -45,6 +45,23 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.BackoffBase != 2*time.Second {
 		t.Fatalf("backoff: got %v", cfg.BackoffBase)
+	}
+}
+
+func TestLoadDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/jobqueue")
+	cfg := Load()
+	if cfg.DatabaseURL != "postgres://localhost/jobqueue" {
+		t.Fatalf("database url: got %q", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadPortFallback(t *testing.T) {
+	t.Setenv("ADDR", "")
+	t.Setenv("PORT", "3000")
+	cfg := Load()
+	if cfg.Addr != ":3000" {
+		t.Fatalf("addr: got %s", cfg.Addr)
 	}
 }
 

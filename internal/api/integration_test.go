@@ -28,7 +28,7 @@ type integrationEnv struct {
 	server *httptest.Server
 	svc    *service.Service
 	store  store.Store
-	queue  *queue.Queue
+	queue  queue.Queue
 	ctx    context.Context
 	cancel context.CancelFunc
 	pool   *worker.Pool
@@ -46,7 +46,7 @@ func startIntegration(t *testing.T, reg *handler.Registry, workerCount int) *int
 		WorkerCount:       workerCount,
 	}
 	st := store.NewMemoryStore()
-	q := queue.New()
+	q := queue.NewMemory()
 	svc := service.New(cfg, st, q, reg)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
@@ -355,7 +355,7 @@ func TestIntegrationHandlerTimeout(t *testing.T) {
 		SchedulerInterval: 10 * time.Millisecond,
 	}
 	st := store.NewMemoryStore()
-	q := queue.New()
+	q := queue.NewMemory()
 	svc := service.New(cfg, st, q, reg)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 

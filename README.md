@@ -28,7 +28,29 @@ go mod tidy
 go run ./cmd/server
 ```
 
-The server starts on `:8080` by default and launches four background workers plus a delayed-job scheduler.
+The server starts on `:8080` by default and launches four background workers plus a delayed-job scheduler. Without `DATABASE_URL`, an in-memory store and queue are used (local dev only).
+
+### Production (PostgreSQL)
+
+Set `DATABASE_URL` to enable a **persistent job store** and **shared queue** safe for multiple DigitalOcean App Platform instances:
+
+```bash
+export DATABASE_URL="postgres://user:pass@host:5432/jobqueue?sslmode=require"
+go run ./cmd/server
+```
+
+On startup the server:
+
+1. Runs embedded migrations (`jobs` + `job_queue` tables)
+2. Reconciles any `queued` jobs missing from the shared queue (crash recovery)
+3. Uses `FOR UPDATE SKIP LOCKED` on dequeue so workers across instances never claim the same job
+
+**DigitalOcean App Platform:**
+
+1. Add a **Managed PostgreSQL** database component to your app
+2. Bind `DATABASE_URL` to the app (DO sets this automatically when linked)
+3. Set `PORT` (DO injects this) — the server listens on `:PORT` when `ADDR` is unset
+4. Scale to multiple instances — submit and get will share the same job records
 
 ### Build a binary
 
@@ -89,7 +111,9 @@ Wire the registry in `cmd/server/main.go` if you create handlers in a separate p
 
 | Environment Variable   | Default  | Description                          |
 |------------------------|----------|--------------------------------------|
-| `ADDR`                 | `:8080`  | HTTP listen address                  |
+| `DATABASE_URL`         | *(empty)* | PostgreSQL connection string; enables persistent store + shared queue |
+| `ADDR`                 | `:PORT` or `:8080` | HTTP listen address (`PORT` used on PaaS when `ADDR` unset) |
+| `PORT`                 | `8080`   | Used to build `ADDR` when `ADDR` is not set |
 | `WORKER_COUNT`         | `4`      | Number of concurrent workers         |
 | `DEFAULT_MAX_RETRIES`  | `3`      | Default retry limit                  |
 | `DEFAULT_TIMEOUT`      | `30s`    | Default per-attempt timeout          |
@@ -562,4 +586,24 @@ Integration tests spin up the real router, service, queue, scheduler, and worker
 
 ## Production Notes
 
-The default in-memory store and queue are suitable for single-node deployments and development. For multi-node production, swap `store.MemoryStore` and `queue.Queue` for Redis or PostgreSQL implementations behind the same interfaces in `internal/store` and `internal/queue`.
+### Storage backends
+
+| Mode | When | Store | Queue |
+|------|------|-------|-------|
+| **Development** | `DATABASE_URL` unset | In-memory map | In-memory heap |
+| **Production** | `DATABASE_URL` set | PostgreSQL `jobs` table | PostgreSQL `job_queue` table |
+
+PostgreSQL provides:
+
+- **Durability** — jobs survive restarts and redeploys
+- **Shared state** — all app instances read/write the same jobs
+- **Safe concurrent dequeue** — `FOR UPDATE SKIP LOCKED` prevents double-processing across workers/instances
+- **Atomic submit** — job insert + queue enqueue in one transaction
+- **Queue reconciliation** — orphaned `queued` jobs re-enqueued on startup
+
+### Schema
+
+Migrations live in `internal/db/migrations/001_init.sql` and run automatically at startup.
+
+- `jobs` — full job lifecycle, payload, result, errors
+- `job_queue` — pending work index (priority + `available_at` for retries)
