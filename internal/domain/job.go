@@ -17,21 +17,22 @@ const (
 )
 
 type Job struct {
-	ID              string          `json:"id"`
-	Type            string          `json:"type"`
-	Payload         json.RawMessage `json:"payload"`
-	Priority        int             `json:"priority"`
-	MaxRetries      int             `json:"max_retries"`
-	TimeoutPerAttempt time.Duration `json:"timeout_per_attempt"`
-	State           JobState        `json:"state"`
-	AttemptCount    int             `json:"attempt_count"`
-	LastError       string          `json:"last_error,omitempty"`
-	Result          json.RawMessage `json:"result,omitempty"`
-	AvailableAt     time.Time       `json:"available_at"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	StartedAt       *time.Time      `json:"started_at,omitempty"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+	ID                string          `json:"id"`
+	Type              string          `json:"type"`
+	Payload           json.RawMessage `json:"payload"`
+	Priority          int             `json:"priority"`
+	MaxRetries        int             `json:"max_retries"`
+	TimeoutPerAttempt time.Duration   `json:"timeout_per_attempt"`
+	State             JobState        `json:"state"`
+	AttemptCount      int             `json:"attempt_count"`
+	LastError         string          `json:"last_error,omitempty"`
+	Result            json.RawMessage `json:"result,omitempty"`
+	ScheduleID        string          `json:"schedule_id,omitempty"`
+	AvailableAt       time.Time       `json:"available_at"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	StartedAt         *time.Time      `json:"started_at,omitempty"`
+	CompletedAt       *time.Time      `json:"completed_at,omitempty"`
 }
 
 type SubmitJobRequest struct {
@@ -40,6 +41,8 @@ type SubmitJobRequest struct {
 	Priority          int             `json:"priority"`
 	MaxRetries        int             `json:"max_retries"`
 	TimeoutPerAttempt string          `json:"timeout_per_attempt"`
+	RunAt             string          `json:"run_at"`
+	Delay             string          `json:"delay"`
 }
 
 type JobResponse struct {
@@ -52,6 +55,8 @@ type JobResponse struct {
 	AttemptCount      int             `json:"attempt_count"`
 	LastError         string          `json:"last_error,omitempty"`
 	Result            json.RawMessage `json:"result,omitempty"`
+	ScheduleID        string          `json:"schedule_id,omitempty"`
+	AvailableAt       time.Time       `json:"available_at"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 	StartedAt         *time.Time      `json:"started_at,omitempty"`
@@ -69,6 +74,8 @@ func (j *Job) ToResponse() JobResponse {
 		AttemptCount:      j.AttemptCount,
 		LastError:         j.LastError,
 		Result:            j.Result,
+		ScheduleID:        j.ScheduleID,
+		AvailableAt:       j.AvailableAt,
 		CreatedAt:         j.CreatedAt,
 		UpdatedAt:         j.UpdatedAt,
 		StartedAt:         j.StartedAt,

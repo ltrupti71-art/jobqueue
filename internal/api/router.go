@@ -15,6 +15,10 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /queue/depth", h.QueueDepth)
 	mux.HandleFunc("POST /queue/drain", h.DrainQueue)
 	mux.HandleFunc("GET /dead-letter", h.ListDeadLettered)
+	mux.HandleFunc("POST /schedules", h.CreateSchedule)
+	mux.HandleFunc("GET /schedules", h.ListSchedules)
+	mux.HandleFunc("GET /schedules/{id}", h.GetSchedule)
+	mux.HandleFunc("POST /schedules/{id}/cancel", h.CancelSchedule)
 
 	var handler http.Handler = mux
 	handler = Logging(logger)(handler)

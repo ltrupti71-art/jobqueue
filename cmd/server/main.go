@@ -26,6 +26,7 @@ func main() {
 
 	var st store.Store
 	var q queue.Queue
+	var scheduleStore store.ScheduleStore
 
 	if cfg.DatabaseURL != "" {
 		pool, err := db.Connect(ctx, cfg.DatabaseURL)
@@ -49,15 +50,17 @@ func main() {
 
 		st = pgStore
 		q = queue.NewPostgres(pool)
+		scheduleStore = store.NewPostgresScheduleStore(pool)
 		logger.Info("using PostgreSQL store and queue")
 	} else {
 		st = store.NewMemoryStore()
 		q = queue.NewMemory()
+		scheduleStore = store.NewMemoryScheduleStore()
 		logger.Info("using in-memory store and queue (set DATABASE_URL for production)")
 	}
 
 	handlers := handler.NewRegistry()
-	svc := service.New(cfg, st, q, handlers, logger)
+	svc := service.New(cfg, st, q, scheduleStore, handlers, logger)
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

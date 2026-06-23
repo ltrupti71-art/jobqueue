@@ -36,7 +36,7 @@ func TestPoolProcessesJobs(t *testing.T) {
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg, nil)
+	svc := service.New(cfg, st, q, store.NewMemoryScheduleStore(), reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,7 +96,7 @@ func TestPoolMultipleWorkersConcurrent(t *testing.T) {
 	cfg := config.Config{DefaultMaxRetries: 1, DefaultTimeout: 5 * time.Second}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg, nil)
+	svc := service.New(cfg, st, q, store.NewMemoryScheduleStore(), reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	ctx, cancel := context.WithCancel(context.Background())

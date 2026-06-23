@@ -25,18 +25,19 @@ var (
 )
 
 type Service struct {
-	cfg      config.Config
-	store    store.Store
-	queue    queue.Queue
-	handlers *handler.Registry
-	logger   *slog.Logger
+	cfg       config.Config
+	store     store.Store
+	queue     queue.Queue
+	schedules store.ScheduleStore
+	handlers  *handler.Registry
+	logger    *slog.Logger
 }
 
-func New(cfg config.Config, st store.Store, q queue.Queue, handlers *handler.Registry, logger *slog.Logger) *Service {
+func New(cfg config.Config, st store.Store, q queue.Queue, schedules store.ScheduleStore, handlers *handler.Registry, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{cfg: cfg, store: st, queue: q, handlers: handlers, logger: logger}
+	return &Service{cfg: cfg, store: st, queue: q, schedules: schedules, handlers: handlers, logger: logger}
 }
 
 func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*domain.Job, error) {
@@ -66,6 +67,12 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 	}
 
 	now := time.Now().UTC()
+	availableAt, err := resolveAvailableAt(now, req)
+	if err != nil {
+		s.logger.Warn("submit rejected: invalid schedule", "error", err)
+		return nil, err
+	}
+
 	job := &domain.Job{
 		ID:                uuid.NewString(),
 		Type:              req.Type,
@@ -74,7 +81,7 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 		MaxRetries:        maxRetries,
 		TimeoutPerAttempt: timeout,
 		State:             domain.StateQueued,
-		AvailableAt:       now,
+		AvailableAt:       availableAt,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -84,7 +91,7 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 			s.logger.Error("submit failed: atomic create", "job_id", job.ID, "type", job.Type, "error", err)
 			return nil, fmt.Errorf("submit job: %w", err)
 		}
-		s.logger.Info("job submitted", "job_id", job.ID, "type", job.Type, "priority", priority, "max_retries", maxRetries)
+		s.logger.Info("job submitted", "job_id", job.ID, "type", job.Type, "priority", priority, "max_retries", maxRetries, "available_at", availableAt)
 		return job, nil
 	}
 
@@ -93,7 +100,7 @@ func (s *Service) Submit(ctx context.Context, req domain.SubmitJobRequest) (*dom
 		return nil, fmt.Errorf("create job: %w", err)
 	}
 	s.queue.Enqueue(job.ID, job.Priority, job.AvailableAt)
-	s.logger.Info("job submitted", "job_id", job.ID, "type", job.Type, "priority", priority, "max_retries", maxRetries)
+	s.logger.Info("job submitted", "job_id", job.ID, "type", job.Type, "priority", priority, "max_retries", maxRetries, "available_at", availableAt)
 	return job, nil
 }
 
@@ -319,8 +326,12 @@ func (s *Service) RunScheduler(ctx context.Context) {
 			s.logger.Info("scheduler stopped")
 			return
 		case <-ticker.C:
-			if promoted := s.queue.PromoteDue(time.Now().UTC()); promoted > 0 {
+			now := time.Now().UTC()
+			if promoted := s.queue.PromoteDue(now); promoted > 0 {
 				s.logger.Debug("scheduler promoted delayed jobs", "count", promoted)
+			}
+			if s.schedules != nil {
+				s.processDueSchedules(ctx, now)
 			}
 		}
 	}

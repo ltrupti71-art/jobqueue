@@ -29,7 +29,7 @@ func testConfig() config.Config {
 func newTestService(t *testing.T, reg *handler.Registry) (*Service, queue.Queue) {
 	t.Helper()
 	q := queue.NewMemory()
-	svc := New(testConfig(), store.NewMemoryStore(), q, reg, nil)
+	svc := New(testConfig(), store.NewMemoryStore(), q, store.NewMemoryScheduleStore(), reg, nil)
 	return svc, q
 }
 
@@ -316,7 +316,7 @@ func TestProcessJobUnknownHandler(t *testing.T) {
 		AvailableAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	_ = st.Create(ctx, job)
-	svc = New(testConfig(), st, q, handler.NewRegistry(), nil)
+	svc = New(testConfig(), st, q, store.NewMemoryScheduleStore(), handler.NewRegistry(), nil)
 	q.Enqueue("orphan", 0, now)
 
 	svc.ProcessJob(ctx, "orphan")
@@ -340,7 +340,7 @@ func TestProcessJobTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.DefaultTimeout = 50 * time.Millisecond
 	q := queue.NewMemory()
-	svc := New(cfg, store.NewMemoryStore(), q, reg, nil)
+	svc := New(cfg, store.NewMemoryStore(), q, store.NewMemoryScheduleStore(), reg, nil)
 	ctx := context.Background()
 
 	job, _ := svc.Submit(ctx, domain.SubmitJobRequest{
@@ -430,7 +430,7 @@ func TestQueueDepthRunningAndDead(t *testing.T) {
 	cfg := testConfig()
 	cfg.DefaultTimeout = time.Hour
 	q := queue.NewMemory()
-	svc := New(cfg, store.NewMemoryStore(), q, reg, nil)
+	svc := New(cfg, store.NewMemoryStore(), q, store.NewMemoryScheduleStore(), reg, nil)
 	ctx := context.Background()
 
 	_, _ = svc.Submit(ctx, domain.SubmitJobRequest{Type: "hang", Payload: json.RawMessage(`{}`)})
@@ -474,6 +474,121 @@ func TestGetNotFound(t *testing.T) {
 	svc, _ := newTestService(t, handler.NewRegistry())
 	_, err := svc.Get(context.Background(), "missing")
 	if !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestSubmitWithDelay(t *testing.T) {
+	svc, q := newTestService(t, handler.NewRegistry())
+	ctx := context.Background()
+
+	job, err := svc.Submit(ctx, domain.SubmitJobRequest{
+		Type:    "echo",
+		Payload: json.RawMessage(`{}`),
+		Delay:   "1h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !job.AvailableAt.After(time.Now().UTC()) {
+		t.Fatalf("available_at should be in the future: %v", job.AvailableAt)
+	}
+
+	pending, delayed := q.Depth()
+	if pending != 0 || delayed != 1 {
+		t.Fatalf("depth: pending=%d delayed=%d", pending, delayed)
+	}
+}
+
+func TestSubmitWithRunAt(t *testing.T) {
+	svc, _ := newTestService(t, handler.NewRegistry())
+	ctx := context.Background()
+
+	runAt := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	job, err := svc.Submit(ctx, domain.SubmitJobRequest{
+		Type:    "echo",
+		Payload: json.RawMessage(`{}`),
+		RunAt:   runAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := time.Parse(time.RFC3339, runAt)
+	if !job.AvailableAt.Equal(want) {
+		t.Fatalf("available_at: got %v want %v", job.AvailableAt, want)
+	}
+}
+
+func TestSubmitRunAtAndDelayConflict(t *testing.T) {
+	svc, _ := newTestService(t, handler.NewRegistry())
+	_, err := svc.Submit(context.Background(), domain.SubmitJobRequest{
+		Type:  "echo",
+		Delay: "1s",
+		RunAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if !errors.Is(err, ErrConflictingSchedule) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCreateScheduleAndFire(t *testing.T) {
+	svc, q := newTestService(t, handler.NewRegistry())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go svc.RunScheduler(ctx)
+
+	sch, err := svc.CreateSchedule(ctx, domain.CreateScheduleRequest{
+		Type:    "echo",
+		Payload: json.RawMessage(`{"from":"schedule"}`),
+		Cron:    "@every 50ms",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sch.State != domain.ScheduleActive {
+		t.Fatalf("state: got %s", sch.State)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pending, delayed := q.Depth()
+		if pending+delayed > 0 {
+			got, err := svc.GetSchedule(ctx, sch.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.LastRunAt == nil {
+				t.Fatal("expected last_run_at to be set after fire")
+			}
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatal("schedule did not fire a job in time")
+}
+
+func TestCancelSchedule(t *testing.T) {
+	svc, _ := newTestService(t, handler.NewRegistry())
+	ctx := context.Background()
+
+	sch, err := svc.CreateSchedule(ctx, domain.CreateScheduleRequest{
+		Type: "echo",
+		Cron: "0 * * * *",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancelled, err := svc.CancelSchedule(ctx, sch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.State != domain.ScheduleCancelled {
+		t.Fatalf("state: got %s", cancelled.State)
+	}
+
+	_, err = svc.CancelSchedule(ctx, sch.ID)
+	if !errors.Is(err, ErrScheduleNotCancellable) {
 		t.Fatalf("got %v", err)
 	}
 }

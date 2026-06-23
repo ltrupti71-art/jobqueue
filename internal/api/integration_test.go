@@ -47,7 +47,7 @@ func startIntegration(t *testing.T, reg *handler.Registry, workerCount int) *int
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg, nil)
+	svc := service.New(cfg, st, q, store.NewMemoryScheduleStore(), reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,7 +356,7 @@ func TestIntegrationHandlerTimeout(t *testing.T) {
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg, nil)
+	svc := service.New(cfg, st, q, store.NewMemoryScheduleStore(), reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -384,4 +384,71 @@ func TestIntegrationHandlerTimeout(t *testing.T) {
 	if job.AttemptCount != 1 {
 		t.Fatalf("attempts: got %d", job.AttemptCount)
 	}
+}
+
+func TestIntegrationDelayedSubmit(t *testing.T) {
+	env := startIntegration(t, handler.NewRegistry(), 0)
+	defer env.server.Close()
+
+	resp, err := http.Post(env.server.URL+"/jobs", "application/json",
+		bytes.NewBufferString(`{"type":"echo","payload":{"delayed":true},"delay":"500ms"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var submitted domain.JobResponse
+	if err := json.NewDecoder(resp.Body).Decode(&submitted); err != nil {
+		t.Fatal(err)
+	}
+	if submitted.State != domain.StateQueued {
+		t.Fatalf("state: got %s", submitted.State)
+	}
+
+	depthResp, _ := http.Get(env.server.URL + "/queue/depth")
+	var depth domain.QueueDepth
+	_ = json.NewDecoder(depthResp.Body).Decode(&depth)
+	depthResp.Body.Close()
+	if depth.Delayed != 1 {
+		t.Fatalf("expected delayed=1, got %+v", depth)
+	}
+
+	env.startWorkers(1, nil)
+	job := waitForJobState(t, env.server.URL, submitted.ID, domain.StateSucceeded, 3*time.Second)
+	if !bytes.Contains(job.Result, []byte("delayed")) {
+		t.Fatalf("result: %s", job.Result)
+	}
+}
+
+func TestIntegrationRecurringSchedule(t *testing.T) {
+	env := startIntegration(t, handler.NewRegistry(), 1)
+	defer env.server.Close()
+
+	body := `{"type":"echo","payload":{"recurring":true},"cron":"@every 100ms"}`
+	resp, err := http.Post(env.server.URL+"/schedules", "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	var sch domain.ScheduleResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sch); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		gotResp, _ := http.Get(env.server.URL + "/schedules/" + sch.ID)
+		var got domain.ScheduleResponse
+		_ = json.NewDecoder(gotResp.Body).Decode(&got)
+		gotResp.Body.Close()
+		if got.LastRunAt != nil {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatal("schedule did not fire within timeout")
 }

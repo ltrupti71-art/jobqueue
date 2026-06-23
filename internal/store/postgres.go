@@ -34,14 +34,15 @@ func (s *PostgresStore) Create(ctx context.Context, job *domain.Job) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO jobs (
 			id, type, payload, priority, max_retries, timeout_per_attempt_ms,
-			state, attempt_count, last_error, result,
+			state, attempt_count, last_error, result, schedule_id,
 			available_at, created_at, updated_at, started_at, completed_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
 		)`,
 		job.ID, job.Type, job.Payload, job.Priority, job.MaxRetries,
 		job.TimeoutPerAttempt.Milliseconds(),
 		string(job.State), job.AttemptCount, job.LastError, nullableJSON(job.Result),
+		nullableScheduleID(job.ScheduleID),
 		job.AvailableAt, job.CreatedAt, job.UpdatedAt, job.StartedAt, job.CompletedAt,
 	)
 	if err != nil {
@@ -80,7 +81,7 @@ func (s *PostgresStore) ReconcileQueue(ctx context.Context) (int, error) {
 func (s *PostgresStore) Get(ctx context.Context, id string) (*domain.Job, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, type, payload, priority, max_retries, timeout_per_attempt_ms,
-			state, attempt_count, last_error, result,
+			state, attempt_count, last_error, result, schedule_id,
 			available_at, created_at, updated_at, started_at, completed_at
 		FROM jobs WHERE id = $1`, id)
 
@@ -116,7 +117,7 @@ func (s *PostgresStore) Update(ctx context.Context, job *domain.Job) error {
 func (s *PostgresStore) ListByState(ctx context.Context, state domain.JobState) ([]*domain.Job, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, type, payload, priority, max_retries, timeout_per_attempt_ms,
-			state, attempt_count, last_error, result,
+			state, attempt_count, last_error, result, schedule_id,
 			available_at, created_at, updated_at, started_at, completed_at
 		FROM jobs WHERE state = $1 ORDER BY created_at ASC`, string(state))
 	if err != nil {
@@ -150,10 +151,11 @@ func scanJob(row scannable) (*domain.Job, error) {
 	var state string
 	var timeoutMS int64
 	var result []byte
+	var scheduleID *string
 
 	err := row.Scan(
 		&job.ID, &job.Type, &job.Payload, &job.Priority, &job.MaxRetries, &timeoutMS,
-		&state, &job.AttemptCount, &job.LastError, &result,
+		&state, &job.AttemptCount, &job.LastError, &result, &scheduleID,
 		&job.AvailableAt, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.CompletedAt,
 	)
 	if err != nil {
@@ -163,6 +165,9 @@ func scanJob(row scannable) (*domain.Job, error) {
 	job.TimeoutPerAttempt = time.Duration(timeoutMS) * time.Millisecond
 	if len(result) > 0 {
 		job.Result = json.RawMessage(result)
+	}
+	if scheduleID != nil {
+		job.ScheduleID = *scheduleID
 	}
 	return &job, nil
 }
@@ -178,14 +183,15 @@ func insertJob(ctx context.Context, tx pgx.Tx, job *domain.Job) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO jobs (
 			id, type, payload, priority, max_retries, timeout_per_attempt_ms,
-			state, attempt_count, last_error, result,
+			state, attempt_count, last_error, result, schedule_id,
 			available_at, created_at, updated_at, started_at, completed_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
 		)`,
 		job.ID, job.Type, job.Payload, job.Priority, job.MaxRetries,
 		job.TimeoutPerAttempt.Milliseconds(),
 		string(job.State), job.AttemptCount, job.LastError, nullableJSON(job.Result),
+		nullableScheduleID(job.ScheduleID),
 		job.AvailableAt, job.CreatedAt, job.UpdatedAt, job.StartedAt, job.CompletedAt,
 	)
 	return err

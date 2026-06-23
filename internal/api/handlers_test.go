@@ -38,7 +38,7 @@ func newTestEnv(t *testing.T, reg *handler.Registry) testEnv {
 	}
 	st := store.NewMemoryStore()
 	q := queue.NewMemory()
-	svc := service.New(cfg, st, q, reg, nil)
+	svc := service.New(cfg, st, q, store.NewMemoryScheduleStore(), reg, nil)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	h := NewHandler(svc, logger)
 	return testEnv{
